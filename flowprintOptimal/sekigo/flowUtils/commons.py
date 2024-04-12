@@ -123,6 +123,5 @@ def minimizeOverlaps(starting_points,requested_interval,required_number_of_point
             optimized_interval = mid_interval
             remaining_points_answer = remaining_points
             mn_interval = mid_interval + 1
-            
-    print(optimized_interval)
+    
     return remaining_points_answer

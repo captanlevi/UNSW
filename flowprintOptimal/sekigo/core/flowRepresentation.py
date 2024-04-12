@@ -89,12 +89,12 @@ class FlowRepresentation:
             assert required_grain > current_grain, "can only downsample ;( cause interpolation is not included in this package"
             assert (required_grain/current_grain)%1 == 0, "need the factor to be a whole number"
             factor = int(required_grain/current_grain)
-            assert self.up_bytes.shape[1]%factor == 0, "We also require the length of current array to be divisible with the factor so that the configuration duration does not have to be changed"
-
-
+    
             self._downSampleFrequency(down_sample_factor= factor)
             # now remaking packet lengths
             self._addPacketLengths() 
+
+        self.flow_config = other_config
 
     def __len__(self):
         """

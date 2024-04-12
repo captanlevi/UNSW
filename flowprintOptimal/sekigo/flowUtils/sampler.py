@@ -29,8 +29,6 @@ class FixedLengthSampler:
 
 
     def sampleAndCutToLength(self,data : List[FlowRepresentation]):
-       
-        
         class_to_chance_per_point = None
         
         class_to_chance_per_point = self.__generateSampleChancePerClass(flows= data)
@@ -41,7 +39,6 @@ class FixedLengthSampler:
             down_packets = flow.down_packets [:,start_index:start_index+ self.required_length_in_datapoints].copy()
             up_bytes = flow.up_bytes[:,start_index:start_index+ self.required_length_in_datapoints].copy()
             down_bytes =  flow.down_bytes[:,start_index:start_index+ self.required_length_in_datapoints].copy()
-
             new_flow = FlowRepresentation(up_bytes= up_bytes,down_bytes= down_bytes, up_packets= up_packets,down_packets= down_packets,flow_config= flow.flow_config, class_type= flow.class_type)
             return new_flow
     

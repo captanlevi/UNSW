@@ -8,10 +8,11 @@ class MemoryDataset(Dataset):
     """
     This dataset is used for internal training for the DQN 
     """
-    def __init__(self, memories : List[MemoryElement],num_classes : int):
+    def __init__(self, memories : List[MemoryElement],num_classes : int,min_length : int):
         super().__init__()
         self.memories = memories
         self.num_classes = num_classes
+        self.min_length = min_length
     
 
     def __getitem__(self, index : int):

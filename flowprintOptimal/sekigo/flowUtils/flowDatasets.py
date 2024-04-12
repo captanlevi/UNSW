@@ -43,7 +43,7 @@ class ActivityDataset(BaseFlowDataset):
         super().__init__(flows= flows,label_to_index= label_to_index)
     
     def __getitem__(self, index) -> FlowRepresentation:
-        return dict(flow = getActivityArrayFromFlow(self.flows[index]), label = self.label_to_index[self.flows[index].class_type])
+        return dict(data = getActivityArrayFromFlow(self.flows[index]), label = self.label_to_index[self.flows[index].class_type])
 
     @staticmethod
     def collateFn():
@@ -58,7 +58,7 @@ class DDQNActivityDataset(BaseFlowDataset):
         self.flows = list(map(lambda x : getActivityArrayFromFlow(x), self.flows))
     
     def __getitem__(self, index):
-        return dict(flow = self.flows[index], label  = self.labels[index])
+        return dict(data = self.flows[index], label  = self.labels[index])
 
 
 class MaxNormalizedDataset(BaseFlowDataset):
@@ -66,5 +66,5 @@ class MaxNormalizedDataset(BaseFlowDataset):
         super().__init__(flows= flows,label_to_index= label_to_index)
     
     def __getitem__(self, index) -> FlowRepresentation:
-        return dict(flow = maxNormalizeFlow(self.flows[index]), label = self.label_to_index[self.flows[index].class_type])
+        return dict(data = maxNormalizeFlow(self.flows[index]), label = self.label_to_index[self.flows[index].class_type])
     
