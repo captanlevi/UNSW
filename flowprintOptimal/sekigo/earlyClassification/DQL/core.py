@@ -33,7 +33,6 @@ class MemoryElement:
 
 
 
-
 class Rewarder:
     def __init__(self,max_length,l,num_labels : int):
         self.max_length = max_length
@@ -46,13 +45,14 @@ class Rewarder:
             return 1, True
         else:
             # either incorrect or wait
-            if state.length == self.max_length:
-                # both get -1 if the length is max
-                return -1, True
-            
+            # wait 
             # treat the wait action with a negative reward
             if action == self.num_labels:
-                return -self.l*(state.length/self.max_length), False
-            
-            # reward -1 for incorrect answer.
-            return -1,True
+                if state.length == self.max_length:
+                    # it is the last timestamp
+                    return -self.l/self.max_length, True#-self.l*(state.length/self.max_length),True
+                else:
+                    return  -self.l/self.max_length, False#-self.l*(state.length/self.max_length), False
+            else:
+                # incorrect
+                return -1,True

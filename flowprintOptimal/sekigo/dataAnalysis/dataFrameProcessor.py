@@ -1,6 +1,10 @@
 import pandas as pd
 import numpy as np
-
+import os
+from ..core.flowRepresentation import PacketFlowRepressentation
+from ..flowUtils.commons import normalizePacketRep
+from tqdm import tqdm
+from joblib import delayed, Parallel
 
 class BaseDataFrameProcessor:
     
@@ -102,15 +106,151 @@ class SoftwareUpdateDataProcessor(BaseDataFrameProcessor):
 
     def generateUploadFromDownload(self):
         downloads_df = self.df[self.df.type == "Download"].copy(deep= True)
-        
-        downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["up_bytes"]], downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["down_bytes"]] = \
-                downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["down_bytes"]], downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["up_bytes"]]
-        
 
-        downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["up_packets"]], downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["down_packets"]] = \
-                downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["down_packets"]], downloads_df.loc[:,BaseDataFrameProcessor.column_name_mapper["up_packets"]]
-
+        downloads_df.rename(columns= {BaseDataFrameProcessor.column_name_mapper["up_bytes"] : BaseDataFrameProcessor.column_name_mapper["down_bytes"], BaseDataFrameProcessor.column_name_mapper["down_bytes"] : BaseDataFrameProcessor.column_name_mapper["up_bytes"]} , inplace= True)
+        downloads_df.rename(columns= {BaseDataFrameProcessor.column_name_mapper["up_packets"] : BaseDataFrameProcessor.column_name_mapper["down_packets"], BaseDataFrameProcessor.column_name_mapper["down_packets"] : BaseDataFrameProcessor.column_name_mapper["up_packets"]} , inplace= True)
+        
+        downloads_df.rename(columns= {"up_bytes":"down_bytes", "down_bytes" : "up_bytes"}, inplace= True)
+        downloads_df.rename(columns= {"up_packets":"down_packets", "down_packets" : "up_packets"}, inplace = True)
         downloads_df.loc[:,"type"] = "Upload"
-        downloads_df.loc[:,"down_bytes"] = downloads_df.loc[:,"up_bytes"]
-        downloads_df.loc[:,"down_packets"] = downloads_df.loc[:,"up_packets"]
         self.df = pd.concat([self.df,downloads_df], ignore_index = True)
+
+
+
+
+
+class UTMobileNetProcessor:
+    def __init__(self,base_path):
+        self.csvs = []
+        self.__getCSVPaths(csvs= self.csvs,path= base_path)
+
+
+    def getProtocol(self,row):
+        if not pd.isnull(row['tcp.len']):
+            return 'TCP'
+        elif not pd.isnull(row['udp.length']):
+            return 'UDP'
+        else:
+            return 'Unknown'
+    
+    def getSrcPort(self,row):
+        if not pd.isnull(row['tcp.len']):
+            return row['tcp.srcport']
+        elif not pd.isnull(row['udp.length']):
+            return row['udp.srcport']
+        else:
+            return 'Unknown'
+    
+    def getDstPort(self,row):
+        if not pd.isnull(row['tcp.len']):
+            return row['tcp.dstport']
+        elif not pd.isnull(row['udp.length']):
+            return row['udp.dstport']
+        else:
+            return 'Unknown'
+
+
+    def __getCSVPaths(self,csvs,path):
+        
+        for item in os.listdir(path):
+            item_path = os.path.join(path,item)
+            if os.path.isdir(item_path):
+                self.__getCSVPaths(path= item_path,csvs= csvs)
+            else:
+                if item_path.endswith(".csv"):
+                    csvs.append(item_path)
+
+    
+    def processData(self):
+        flows = []
+
+        
+        csv_flows = Parallel(n_jobs=8)(delayed(self.processCSV)(csv_path) for csv_path in self.csvs)
+        for csv_flow in csv_flows:
+            flows.extend(csv_flow)
+        """
+        for csv_path in tqdm(self.csvs):
+            try:
+                csv_flows = self.processCSV(path= csv_path)
+                flows.extend(csv_flows)
+            except Exception as e:
+                print(e)
+        """
+
+        return flows
+    def processCSV(self,path):
+
+        def processConnDf(conn_df):
+            unique = list(set(conn_df["ip.src"].unique().tolist() + conn_df["ip.dst"].unique().tolist()))
+            assert len(unique) <= 2,unique
+            #mapping = dict()
+            #for i in range(len(unique)):
+            #    mapping[unique[i]] = i
+            
+        
+            directions = conn_df["direction"].tolist()#conn_df["ip.src"].apply(lambda x : mapping[x]).tolist()
+            lengths = conn_df["frame.len"].tolist()
+            timestamps = conn_df["timestamp"].tolist()
+            lengths,inter_arrival_times,directions = normalizePacketRep(lengths= lengths,timestamps= timestamps,directions= directions)
+            file_name = os.path.basename(path).split("_")[0]
+
+            return PacketFlowRepressentation(lengths= lengths,directions= directions,
+                                            inter_arrival_times= inter_arrival_times,class_type= file_name)
+
+
+        df = pd.read_csv(path,low_memory= False)
+        df = df[df['ip.src'].notna()]
+        df = df.apply(lambda row:self.__cleanUpDuplicate(row),axis=1)
+        df = df[(df['ip.src']!='127.0.0.1') & (df['ip.dst']!='127.0.0.1')]
+        df["timestamp"] = pd.to_datetime(df["frame.time"].apply(lambda x : x.replace("CDT","").replace("CST","").strip()),format = "mixed")
+
+        flows = []
+        conn_dfs = self.getConnDfs(df)
+        flows = map(lambda x : processConnDf(x), conn_dfs)
+        return flows
+
+
+    def getConnDfs(self,df):
+        # expects df to have timestamp column that is sortable, among other things
+        df['protocal'] = df.apply(lambda row: self.getProtocol(row), axis=1)
+        df['srcport'] = df.apply(lambda row: self.getSrcPort(row), axis=1)
+        df['dstport'] = df.apply(lambda row: self.getDstPort(row), axis=1) 
+
+        included = set()
+        flow_dict = dict()
+        conn_dfs = []
+        flow_columns = ['ip.src', 'srcport', 'ip.dst', 'dstport', 'protocal']
+
+
+        for flow, flow_df in df.groupby(by=flow_columns):
+            if flow[0].split('.')[0] == '10':
+                flow_df["direction"] = 0
+            else:
+                flow_df["direction"] = 1
+            flow_dict[flow] = flow_df
+        
+        for key in flow_dict:
+            if key in included:
+                continue
+            rev_key = (key[2],key[3],key[0],key[1],key[4])
+
+            if rev_key in flow_dict:
+                conn_df = pd.concat([flow_dict[key],flow_dict[rev_key]])
+                conn_df.sort_values(by= "timestamp",inplace= True)
+
+                if len(conn_df) >= 30:
+                    conn_dfs.append(conn_df)
+            
+            included.add(rev_key)
+
+        
+        return conn_dfs
+
+
+    def __cleanUpDuplicate(self,row):
+        if len(row['ip.src'].split(','))>1:
+            row['ip.src'] = row['ip.src'].split(',')[1]
+        if len(row['ip.dst'].split(','))>1:
+            row['ip.dst'] = row['ip.dst'].split(',')[1]
+        return row
+    

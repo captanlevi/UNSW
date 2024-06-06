@@ -168,6 +168,15 @@ class FixedLengthSampler:
             return start_points[offset:]
 
 
+
+
+
+
+
+
+
+
+
 class FixedLengthSimpleSampler:
 
     @staticmethod

@@ -1,13 +1,12 @@
 from tqdm import tqdm
 from typing import List, Dict
 import datetime
-from ..core.flowRepresentation import FlowRepresentation
+from ..core.flowRepresentation import FlowRepresentation,PacketFlowRepressentation
 from ..core.flowConfig import FlowConfig
 import numpy as np
 import pandas as pd
-
-
-
+from joblib import Parallel, delayed
+from ..flowUtils.commons import normalizePacketRep
 
 
 class VNATDataFrameProcessor:
@@ -130,7 +129,13 @@ class VNATDataFrameProcessor:
         
         up_bytes,down_bytes,up_packets,down_packets = [],[],[],[]
 
-        for _,values in aggregated_results.items():
+        keys = list(aggregated_results.keys())
+        keys.sort()
+        sorted_values = [aggregated_results[i] for i in keys]
+        up_bytes,down_bytes,up_packets,down_packets = [],[],[],[]
+
+
+        for values in sorted_values:
             up_packets.append(values["up_packets"])
             down_packets.append(values["down_packets"])
             up_bytes.append(values["up_bytes"])
@@ -148,6 +153,11 @@ class VNATDataFrameProcessor:
         timestamps = row["timestamps"]
         packet_sizes = row["sizes"]
         directions = row["directions"]
+
+
+        packet_sizes = [x for _, x in sorted(zip(timestamps, packet_sizes), key=lambda pair: pair[0])]
+        directions = [x for _, x in sorted(zip(timestamps, directions), key=lambda pair: pair[0])]
+        timestamps.sort()
         grain = datetime.timedelta(seconds= flow_config.grain)
         timestamps = list(map(lambda x : datetime.datetime.fromtimestamp(x), timestamps))
         normalized_timestamps = VNATDataFrameProcessor.normalizeTimestamps(timestamps= timestamps)
@@ -186,4 +196,33 @@ class VNATDataFrameProcessor:
         return flows
 
     
+    @staticmethod
+    def getPacketFlows(data_frame_path : str = "data/VNAT/vnat_dataframe.h5"):
+        def getPacketFlowFromRow(row):
+            timestamps = row["timestamps"]
+            timestamps = list(map(lambda x : datetime.datetime.fromtimestamp(x), timestamps))
+            lengths = row["sizes"]
+            directions = row["directions"]
 
+            lengths = [x for _, x in sorted(zip(timestamps, lengths), key=lambda pair: pair[0])]
+            directions = [x for _, x in sorted(zip(timestamps, directions), key=lambda pair: pair[0])]
+            timestamps.sort()
+
+            lengths,inter_arrival_times,directions = normalizePacketRep(lengths= lengths,directions= directions,timestamps= timestamps)
+            class_type = VNATDataFrameProcessor.processFileNames(filename= row["file_names"])
+            return PacketFlowRepressentation(lengths= lengths,directions= directions,inter_arrival_times= inter_arrival_times,class_type= class_type)
+        
+
+        
+        df = pd.read_hdf(data_frame_path)
+        packet_flow_reps = Parallel(n_jobs=10)(delayed(getPacketFlowFromRow)(df.iloc[i]) for i in range(len(df)))
+        """
+        for i in tqdm(range(len(df))):
+            row = df.iloc[0]
+
+            if len(row["sizes"]) >= 30:
+                packet_flow_reps.append(getPacketFlowFromRow(row= row))
+        """
+        return packet_flow_reps
+
+        

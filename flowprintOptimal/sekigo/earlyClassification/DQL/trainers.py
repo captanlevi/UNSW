@@ -9,19 +9,25 @@ from ...modeling.loggers import Logger
 from sklearn.metrics import precision_recall_fscore_support
 import numpy as np
 from ...utils.commons import augmentData
+from ...utils.evaluations import EarlyEvaluation
+from torch.utils.data import WeightedRandomSampler
+import random
+
+
 
 class EarlyClassificationtrainer:
-    def __init__(self,feature_extractor : LSTMNetwork,predictor : LinearPredictor,train_dataset : BaseFlowDataset,memory_dataset : MemoryDataset,
+    def __init__(self,predictor : LSTMNetwork,train_dataset : BaseFlowDataset,memory_dataset : MemoryDataset,hint_loss_alpha : float,q_loss_alpha : float,use_sampler : bool, hint_loss_gap : float,
                  test_dataset : BaseFlowDataset,ood_dataset : BaseFlowDataset,logger : Logger,model_replacement_steps : int,device : str):
         
         self.device = device
-        self.feature_extractor  = feature_extractor.to(device)
-        self.lag_feature_extractor = deepcopy(feature_extractor).to(device)
-        self.lag_feature_extractor.eval()
-
+        self.use_sampler = use_sampler
         self.predictor = predictor.to(device)
         self.lag_predictor = deepcopy(predictor).to(device)
         self.lag_predictor.eval()
+
+        self.hint_loss_alpha = hint_loss_alpha
+        self.q_loss_alpha = q_loss_alpha
+        self.hint_loss_gap = hint_loss_gap
 
         self.train_dataset = train_dataset
         self.memory_dataset = memory_dataset
@@ -29,7 +35,14 @@ class EarlyClassificationtrainer:
         self.ood_dataset = ood_dataset
         self.logger = logger
 
-        self.mse_loss_function = nn.MSELoss()
+        self.best = dict(
+            score = 0,
+            model = deepcopy(self.predictor)
+        )
+
+        self.evaluator = EarlyEvaluation(min_steps= memory_dataset.min_length, device= device,model= self.predictor)
+
+        self.mse_loss_function = nn.MSELoss(reduction= "none")
         self.model_replacement_steps = model_replacement_steps
 
         self.logger.setMetricReportSteps(metric_name= "test_eval_f1", step_size= 1)
@@ -37,11 +50,33 @@ class EarlyClassificationtrainer:
         self.logger.setMetricReportSteps(metric_name= "train_eval_time", step_size= 1)
         self.logger.setMetricReportSteps(metric_name= "test_eval_time", step_size= 1)
         self.logger.setMetricReportSteps(metric_name= "ood_eval", step_size= 1)
+        self.logger.setMetricReportSteps(metric_name= "ood_eval_time", step_size= 1)
+        self.logger.setMetricReportSteps(metric_name= "incorrect_ood_test", step_size= 1)
+        self.logger.setMetricReportSteps(metric_name= "incorrect_ood_train", step_size= 1)
         
-        self.cross_entropy_loss = nn.CrossEntropyLoss()
+        self.cross_entropy_loss = nn.CrossEntropyLoss(reduction= "none")
 
+
+
+    def getWeightedSampler(self,memory_dataset):
+        """
+        memory dataset has all actions at least once
+        """
+        actions = []
+
+        for d in memory_dataset.memories:
+            actions.append(d.action)
+        actions = np.array(actions)
+
+        unique_actions = np.unique(actions)
+        weights = np.array([1/len(actions)]*len(actions))
+
+        weights[actions == (len(unique_actions) - 1)] *= (len(unique_actions) -1)
+        weights = weights/weights.sum()
+        sampler = WeightedRandomSampler(weights= weights,num_samples= len(weights))
+        return sampler
     
-    def trainFullClassifier(self,batch_size,feature_extractor_optimizer, predictor_optimizer):
+    def trainFullClassifier(self,batch_size, predictor_optimizer):
         indices = np.random.randint(0,len(self.train_dataset),size= batch_size).tolist()
         X,y = [],[]
 
@@ -63,44 +98,74 @@ class EarlyClassificationtrainer:
         y = torch.tensor(y).to(self.device).long()
 
 
-        feature_extractor_optimizer.zero_grad()
         predictor_optimizer.zero_grad()
-        model_out = self.predictor(self.feature_extractor(X))
+        model_out = self.predictor(X)[0]
         loss = self.cross_entropy_loss(model_out,y)
         loss.backward()
-        feature_extractor_optimizer.step()
         predictor_optimizer.step()
         self.logger.addMetric(metric_name= "full_classifier_loss", value= loss.cpu().item())
 
 
+    def hintLoss(self,model_out,labels,state_lengths):
+        """
+        applying on predictions that are not waiting and are wrong only
+        """
+        wait_label = model_out.shape[1] - 1
+        labels[labels == -1] = wait_label
 
-    def trainStep(self,steps,batch : dict,lam : float,feature_extractor_optimizer,predictor_optimizer):
+
+        # editing the 
+        mx_values,model_out_preds = torch.max(model_out,dim= -1) # (BS,)
+        
+        mask = ((model_out_preds != wait_label) & (model_out_preds != labels)).float()
+        #weights = state_lengths/self.memory_dataset.max_length
+        #self.mse_loss_function(mx_values, model_out[:,-1])
+        model_correct_label_outputs = torch.gather(input= model_out,index= labels.unsqueeze(-1), dim= -1)[:,0]
+        #model_wait_label_outputs = model_out[:,-1]
+
+        #wait_greater_mask = (model_wait_label_outputs >= model_correct_label_outputs).float()
+
+        hint_loss =  (mx_values - model_correct_label_outputs) + self.hint_loss_gap  # this is a gap parameter
+        hint_loss = hint_loss*mask
+    
+        return hint_loss.sum()/(mask.sum() + 1e-8)
+        
+
+
+    def trainStep(self,steps,batch : dict,lam : float,predictor_optimizer):
         """
         state and next state is (BS,num_classes)
         """
-        self.trainFullClassifier(batch_size= batch["action"].shape[0],feature_extractor_optimizer= feature_extractor_optimizer,predictor_optimizer= predictor_optimizer)
+        #self.trainFullClassifier(batch_size= batch["action"].shape[0],predictor_optimizer= predictor_optimizer)
 
 
         state,next_state,action,reward,is_terminal = batch["state"].to(self.device), batch["next_state"].to(self.device),\
                                                     batch["action"].to(self.device), batch["reward"].to(self.device),batch["is_terminal"].to(self.device)
-        with torch.no_grad():
-            next_state_max_actions_model = torch.argmax(self.predictor(self.feature_extractor(next_state)),dim = -1,keepdim= True)
-            next_state_values_lag_model = self.lag_predictor(self.lag_feature_extractor(next_state))
-            next_state_values_for_max_action = torch.gather(input= next_state_values_lag_model, dim= 1, index= next_state_max_actions_model)
-            next_state_values_for_max_action = next_state_values_for_max_action*(~(is_terminal.unsqueeze(-1)))
-            target = reward + lam*(next_state_values_for_max_action.squeeze())
         
-        predicted_values = self.predictor(self.feature_extractor(state))
-        predicted_values_for_taken_action = torch.gather(input= predicted_values, dim= 1,index= action.unsqueeze(-1)).squeeze()
-        
-        loss = self.mse_loss_function(target, predicted_values_for_taken_action.squeeze()).mean()
+        label, state_length = batch["label"].to(self.device), batch["state_length"].to(self.device)
 
+        with torch.no_grad():
+            next_state_max_actions_model = torch.argmax(self.predictor(next_state)[0],dim = -1,keepdim= True)
+            next_state_values_lag_model = self.lag_predictor(next_state)[0]
+            next_state_values_for_max_action = torch.gather(input= next_state_values_lag_model, dim= 1, index= next_state_max_actions_model) # (BS,1)
+            next_state_values_for_max_action = next_state_values_for_max_action*(~(is_terminal.unsqueeze(-1)))
+            target = reward + lam*(next_state_values_for_max_action.squeeze()) # (BS)
+        
+        predicted_values = self.predictor(state)[0]
+        predicted_values_for_taken_action = torch.gather(input= predicted_values, dim= 1,index= action.unsqueeze(-1)).squeeze() # (BS)
+        
+        q_loss = self.mse_loss_function(target, predicted_values_for_taken_action).mean()
+
+
+        # adding hint loss
+        hint_loss = self.hintLoss(model_out= predicted_values, labels= label, state_lengths= state_length)
+
+        loss = q_loss*self.q_loss_alpha + self.hint_loss_alpha*hint_loss
         loss.backward()
-        feature_extractor_optimizer.step()
-        feature_extractor_optimizer.zero_grad()
         predictor_optimizer.step()
         predictor_optimizer.zero_grad()
-        self.logger.addMetric(metric_name= "loss", value= loss.item())
+        self.logger.addMetric(metric_name= "q_loss", value= loss.item())
+        self.logger.addMetric(metric_name= "hint_loss", value= hint_loss.item())
 
 
         if steps%self.model_replacement_steps == 0:
@@ -109,110 +174,63 @@ class EarlyClassificationtrainer:
         return loss
         
     def __refreshLagModel(self):
-        self.lag_feature_extractor = deepcopy(self.feature_extractor)
         self.lag_predictor = deepcopy(self.predictor)
         self.lag_predictor.eval()
-        self.lag_feature_extractor.eval()
     
-
-    def predictStep(self,batch_X):
-        """
-        Here the return is of shape (BS,seq_len)
-        """
-        self.predictor.eval()
-        self.feature_extractor.eval()
-        with torch.no_grad():
-            model_out = self.predictor(self.feature_extractor.earlyClassificationForward(batch_X))
-        self.predictor.train()
-        self.feature_extractor.train()
-        return torch.argmax(model_out,dim= -1)
-
-
-    def __processSinglePrediction(self,prediction,num_classes):
-        """
-        predictions are of shape (seq_len)
-        """
-        
-        for time in range(self.memory_dataset.min_length,len(prediction)):
-            if prediction[time] < num_classes:
-                return (prediction[time],time + 1)
-        
-        return (-1,len(prediction))
-        
-    def predictOnDataset(self,dataset : BaseFlowDataset):
-        dataloader = DataLoader(dataset= dataset, batch_size = 64)
-        self.feature_extractor.eval()
-        self.predictor.eval()
-        with torch.no_grad():
-
-            labels = []
-            predictions = []
-            for batch in dataloader:
-                batch_X,batch_y = batch["data"].float().to(self.device), batch["label"].to(self.device)
-                predicted = self.predictStep(batch_X = batch_X).cpu().numpy() # (BS,seq_len)
-                processed_predictions = map(lambda x : self.__processSinglePrediction(x,len(dataset.label_to_index)), predicted)
-
-                predictions.extend(processed_predictions)
-                labels.extend(batch_y.cpu().numpy().tolist())
-
-        self.feature_extractor.train()
-        self.predictor.train()
-        return predictions
 
 
     def eval(self,dataset : BaseFlowDataset):
-        predictions = self.predictOnDataset(dataset= dataset)
-        labels = list(map(lambda x : x["label"], dataset))
-
-        predicted_labels,time = [],[]
-
-        for i in range(len(predictions)):
-            predicted_labels.append(predictions[i][0])
-            time.append(predictions[i][1])
-        _,_,f1,_ = precision_recall_fscore_support(labels, predicted_labels, average= "weighted",zero_division=0)
-        average_time = sum(time)/len(time)
-        return f1,average_time
+        metrices = self.evaluator.getMetrices(dataset= dataset,ood_dataset= None)
+        return metrices["macro_f1"],metrices["time"],metrices["incorrect_ood"]
     
 
     def evalTrain(self):
-        f1,average_time = self.eval(dataset= self.train_dataset)
+        f1,average_time,incorrect_ood = self.eval(dataset= self.train_dataset)
         self.logger.addMetric(metric_name= "train_eval_f1", value= f1)
         self.logger.addMetric(metric_name= "train_eval_time", value= average_time)
+        self.logger.addMetric(metric_name= "incorrect_ood_train", value = incorrect_ood)
 
     def evalTest(self):
-        f1,average_time = self.eval(dataset= self.test_dataset)
+        f1,average_time,incorrect_ood = self.eval(dataset= self.test_dataset)
+
+        if f1 >= self.best["score"]:
+            self.best["score"] = f1
+            self.best["model"] = deepcopy(self.predictor)
+        
         self.logger.addMetric(metric_name= "test_eval_f1", value= f1)
         self.logger.addMetric(metric_name= "test_eval_time", value= average_time)
+        self.logger.addMetric(metric_name= "incorrect_ood_test", value= incorrect_ood)
 
     def evalOOD(self):
-        predictions = self.predictOnDataset(self.ood_dataset)
-        predictions = list(map(lambda x : x[0],predictions))
-        predictions = np.array(predictions)
-        accuracy = (predictions == -1).sum()/predictions.shape[0]
-        self.logger.addMetric(metric_name= "ood_eval", value= accuracy)
+        metrices = self.evaluator.getMetrices(ood_dataset= self.ood_dataset, dataset= None)
+        self.logger.addMetric(metric_name= "ood_eval", value= metrices["ood_accuracy"])
+        self.logger.addMetric(metric_name= "ood_eval_time", value= metrices["ood_time"])
         
 
         
 
-    def train(self,epochs : int,batch_size = 64,lr = .001,lam = .99,model_lag_in_steps = 50):
+    def train(self,epochs : int,batch_size = 64,lr = .001,lam = .99):
         # TODO add batch_sampler
         """
         Can stress enough how important the shuffle == True is in the Dataloader
         """
-        train_dataloader = DataLoader(dataset= self.memory_dataset,collate_fn= self.memory_dataset.collateFn,batch_size= batch_size,drop_last= True,shuffle= True)
-        
-        feature_extractor_optimizer = torch.optim.Adam(params= self.feature_extractor.parameters(), lr= lr)
+        if self.use_sampler == False:
+            train_dataloader = DataLoader(dataset= self.memory_dataset,collate_fn= self.memory_dataset.collateFn,batch_size= batch_size,drop_last= True,shuffle= True)
+        else:
+            sampler = self.getWeightedSampler(memory_dataset= self.memory_dataset)
+            train_dataloader = DataLoader(dataset= self.memory_dataset, collate_fn= self.memory_dataset.collateFn, batch_size= batch_size,drop_last= True,sampler= sampler)
         predictor_optimizer = torch.optim.Adam(params= self.predictor.parameters(), lr = lr)
         steps = 0
 
         for epoch in range(epochs):
             for batch in train_dataloader:
-                self.trainStep(steps = steps,batch= batch,lam= lam, feature_extractor_optimizer= feature_extractor_optimizer, predictor_optimizer= predictor_optimizer)
+                self.trainStep(steps = steps,batch= batch,lam= lam, predictor_optimizer= predictor_optimizer)
                 steps += 1            
 
                 if steps%1000 == 0:
                     self.evalTest()
-                    self.evalOOD()
+                    if self.ood_dataset != None:
+                        self.evalOOD()
                 if steps%2000 == 0:
                     self.evalTrain()
                 

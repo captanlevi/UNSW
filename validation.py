@@ -6,6 +6,7 @@ from flowprintOptimal.sekigo.ood.GAN.trainers import GANTrainer,OODTrainer
 import matplotlib.pyplot as plt
 import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.set_float32_matmul_precision('high')
 from flowprintOptimal.sekigo.utils.commons import augmentData
 from flowprintOptimal.sekigo.modeling.trainers import NNClassificationTrainer
 import torch.nn as nn
@@ -58,21 +59,23 @@ train_dataset = MNISTDataset(root='./data', train=True, transform=transform)
 test_dataset = MNISTDataset(root='./data', train=False, ood=False, transform=transform_non_train)
 ood_dataset = MNISTDataset(root='./data', train=True, ood=True, transform= transform_non_train)
 
+seq_len = 49
+random_dim = 4
 
-discriminator = CNNNetwork2D(in_channels= 1,num_filters= 32,kernel_sizes= [5,9,13],output_dim= 1)
-generator = TransformerGenerator(output_dim= 16,random_dim= 4,seq_len= 49,embedding_dim= 64,num_heads= 4,num_layers= 5,is_img= True,device= device)
-classifier = CNNNetwork2D(in_channels= 1,num_filters= 8,kernel_sizes= [5,9,11],output_dim= len(train_dataset.label_to_index) + 1)
+discriminator = CNNNetwork2D(in_channels= 1,num_filters= 8,num_layers= 4,output_dim= 1)
+generator = TransformerGenerator(output_dim= 16,random_dim= random_dim,embedding_dim= 64,num_heads= 4,num_layers= 5)
+classifier = CNNNetwork2D(in_channels= 1,num_filters= 8,num_layers= 4,output_dim= len(train_dataset.label_to_index) + 1)
 logger = Logger(name= "OOD_GAN")
 logger.default_step_size = 200
 
 
-#trainer = GANTrainer(generator= generator,discriminator= discriminator,logger= logger,device= device)
-trainer = OODTrainer(classifier= classifier,generator=generator,
-                     discriminator= discriminator,logger= logger,device= device,n= 2,classifier_only= False)
 
+#trainer = GANTrainer(generator= generator,discriminator= discriminator,logger= logger,device= device)
+trainer = OODTrainer(classifier= classifier,generator=generator,random_dim = random_dim,seq_len = seq_len,is_img= True,compile= True,
+                     discriminator= discriminator,logger= logger,device= device,n= 2,classifier_only= True)
 
 if __name__ == '__main__':
-    trainer.train(train_dataset= train_dataset,batch_size= 128,n_critic= 3,epochs= 20,ood_dataset=ood_dataset,test_dataset=test_dataset,
-                gp_weight= 1,lr_discriminator= .0001, lr_generator= .0001)
+    trainer.train(train_dataset= train_dataset,batch_size= 128,n_critic= 3,epochs= 200,ood_dataset=ood_dataset,test_dataset=test_dataset,
+                gp_weight= 1,lr_discriminator= .0001, lr_generator= .0001, lr_classifier= .001)
 
 

@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def downSampleArray(array : np.ndarray,factor):
     """
     Array shape is (......,time_steps) needs to be atleast 2D
@@ -12,9 +13,10 @@ def downSampleArray(array : np.ndarray,factor):
 
 
 
-def augmentData(original_data,fraction_range = [.1,.4]):
+def augmentData(original_data,fraction_range = [.25,.4]):
     """
     original data is an numpy array of any dim
+    this function copies and dosent just change the original array
     """
     flat_vector = original_data.reshape(-1).copy()
     indices = np.arange(flat_vector.shape[0])
@@ -28,3 +30,15 @@ def augmentData(original_data,fraction_range = [.1,.4]):
 
 def shuffleAugment(original_data):
     pass
+
+
+def perturbData(data,alpha):
+    #noise = np.random.randn(*data.shape)*alpha
+    noise = np.random.uniform(low= data.min(),high= data.max(),size= data.shape)
+    p_data = data*(1 - alpha) + noise*alpha
+    #p_data = np.clip(p_data,a_min= -1, a_max= 1)
+    return p_data
+
+
+
+

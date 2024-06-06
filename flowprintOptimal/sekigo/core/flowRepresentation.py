@@ -98,6 +98,63 @@ class FlowRepresentation:
 
     def __len__(self):
         """
-        Returns the length of the flow in seconds
+        Returns the length of the flow regardless of the grain
         """
-        return self.up_packets.shape[1]*self.flow_config.grain
+        return self.up_packets.shape[1]
+    
+
+
+
+
+    def __getitem__(self, idx):
+        return self.up_bytes[:,idx],self.down_bytes[:,idx],self.up_packets[:,idx], self.down_packets[:,idx]
+    
+    def getSubFlow(self,start_index,length):
+        end_index = start_index + length
+        up_bytes,down_bytes,up_packets,down_packets = self[start_index:end_index]
+        return FlowRepresentation(up_bytes= up_bytes.copy(), down_bytes= down_bytes.copy(), up_packets= up_packets.copy(),
+                                  down_packets= down_packets.copy(),class_type= self.class_type,flow_config= self.flow_config
+                                  )
+    
+
+
+
+
+
+class PacketFlowRepressentation:
+    def __init__(self,lengths,directions,inter_arrival_times,class_type) -> None:
+        assert len(lengths) == len(directions) == len(inter_arrival_times)
+        self.lengths = lengths
+        self.directions = directions
+        self.inter_arrival_times = inter_arrival_times
+        self.class_type = class_type
+
+    def __getitem__(self, idx):
+        return self.lengths[idx],self.directions[idx],self.inter_arrival_times[idx]
+    
+    def getSubFlow(self,start_index,length):
+        end_index = start_index + length
+        lengths,directions,interarrival_times = self[start_index:end_index]
+        return PacketFlowRepressentation(lengths= lengths.copy(),directions= directions.copy(),inter_arrival_times= interarrival_times.copy(), class_type= self.class_type)
+    
+
+
+    def ser(self):
+        return dict(
+            lengths = self.lengths,
+            directions = self.directions,
+            inter_arrival_times = self.inter_arrival_times,
+            class_type = self.class_type
+        )
+    
+    @staticmethod
+    def deSer(dct):
+        return PacketFlowRepressentation(lengths = dct["lengths"],
+        directions = dct["directions"],
+        inter_arrival_times = dct["inter_arrival_times"],
+        class_type = dct["class_type"]
+        )
+
+    
+    def __len__(self):
+        return len(self.lengths)

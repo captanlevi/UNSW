@@ -1,17 +1,19 @@
-from ..core.flowRepresentation import FlowRepresentation
+from ..core.flowRepresentation import FlowRepresentation,PacketFlowRepressentation
 from typing import List
 import json
 import numpy as np
+import datetime
 
 def saveFlows(path,flows : List[FlowRepresentation]):
     with open(path,"w") as f:
         serilized_data = list(map(lambda x : json.dumps(x.ser()),flows))
         json.dump(serilized_data,f)
 
-def loadFlows(path) -> List[FlowRepresentation]:
+def loadFlows(path,cls = FlowRepresentation) -> List[FlowRepresentation]:
     with open(path,"r") as f:
         data = json.load(f)
-        flows = list(map(lambda x : FlowRepresentation.deSer(json.loads(x)), data))
+        flows = list(map(lambda x : cls.deSer(json.loads(x)), data))
+        
     return flows
 
 
@@ -61,7 +63,11 @@ def getActivityArrayFromFlow(flow : FlowRepresentation):
     band_thresholds = flow.flow_config.band_thresholds[:]
     band_thresholds.append(1500)
     band_thresholds = np.array(band_thresholds).reshape(-1,1)
-    activity_array = np.concatenate([flow.up_packets_length/band_thresholds,flow.down_packets_length/band_thresholds])
+
+    ratio_array_byte = flow.down_bytes.sum(axis = 0,keepdims = True)/(flow.up_bytes + flow.down_bytes + 1e-8).sum(axis = 0,keepdims = True)
+    ratio_array_packet = flow.down_packets.sum(axis = 0,keepdims = True)/(flow.up_packets + flow.down_packets + 1e-8).sum(axis = 0,keepdims = True)
+    activity_array = np.concatenate([flow.up_packets_length/band_thresholds,flow.down_packets_length/band_thresholds,ratio_array_byte,ratio_array_packet])
+    activity_array = np.clip(activity_array,a_max= 1, a_min= 0)
     # must transpose the array as flow has (numbands, timesteps)
     return activity_array.T
 
@@ -125,3 +131,86 @@ def minimizeOverlaps(starting_points,requested_interval,required_number_of_point
             mn_interval = mid_interval + 1
     
     return remaining_points_answer
+
+
+
+
+def getIATFromTimeStamps(timestamps):
+    """
+    timestamps is an array of datetime.datetime objects in sorted order
+    """
+    inter_arrival_times = []
+    for i in range(len(timestamps)):
+        if i == 0:
+            inter_arrival_times.append(0)
+        else:
+            inter_arrival_times.append((timestamps[i] - timestamps[i-1]).total_seconds()*1e6)
+            assert inter_arrival_times[-1] >= 0, "{}".format(inter_arrival_times[-1])
+            inter_arrival_times[-1] = np.log(inter_arrival_times[-1] + 1)/np.log(900000)
+    return inter_arrival_times
+
+
+def getTimeStampsFromIAT(inter_arrival_times):
+    timestamps = [0]
+    C = np.log(900000)
+    base_time = datetime.datetime(year= 2023, month= 7, day= 31)
+    for i in range(1,len(inter_arrival_times)):
+        this_timestamp = timestamps[i-1] + np.exp(inter_arrival_times[i]*C) - 1
+        timestamps.append(this_timestamp)
+
+    for i in range(len(timestamps)):
+        timestamps[i] = base_time + datetime.timedelta(microseconds= float(np.round(timestamps[i])))
+    return timestamps
+
+
+
+
+def normalizePacketRep(lengths,timestamps,directions):
+    assert len(lengths) == len(timestamps) == len(directions)
+    inter_arrival_times = getIATFromTimeStamps(timestamps= timestamps)
+
+    for i in range(len(timestamps)):
+        lengths[i] = lengths[i]/1500
+        assert directions[i] in [0,1]
+
+    return lengths,inter_arrival_times,directions
+
+
+
+def dropPacketFromPacketRep(flow_rep : PacketFlowRepressentation, required_length,max_drop_rate):
+    """
+    Bhai copy karega data aug karne pehle to zindagi mai kush rahega
+
+    """ 
+    assert required_length <= len(flow_rep)
+
+    drop_rate = min(max_drop_rate, (1 - required_length/len(flow_rep)))    
+    drop_rate = np.random.random()*drop_rate
+
+
+
+    lengths = np.array(flow_rep.lengths.copy())
+    inter_arrival_times = np.array(flow_rep.inter_arrival_times.copy())
+    directions = np.array(flow_rep.directions.copy())
+
+    timestamps = np.array(getTimeStampsFromIAT(inter_arrival_times= inter_arrival_times))
+    num_drop = int(drop_rate* len(flow_rep))
+    keep_indices = np.random.choice(a= np.arange(len(flow_rep)),size= len(flow_rep) - num_drop, replace= False)
+
+    # sorting the keep indices is very important
+    keep_indices.sort()
+
+    lengths = lengths[keep_indices].tolist()
+    timestamps = timestamps[keep_indices].tolist()
+    directions = directions[keep_indices].tolist()
+    inter_arrival_times = getIATFromTimeStamps(timestamps)
+    aug_rep = PacketFlowRepressentation(lengths= lengths, directions= directions, inter_arrival_times= inter_arrival_times,class_type= flow_rep.class_type)
+    aug_rep = aug_rep.getSubFlow(start_index=0, length= required_length)
+    return aug_rep
+
+
+
+
+
+
+
