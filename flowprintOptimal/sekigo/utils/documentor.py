@@ -1,7 +1,7 @@
 import os
 import torch
 import json
-from ..modeling.neuralNetworks import CNNNetwork1D,LSTMNetwork
+from ..modeling.neuralNetworks import CNNNetwork1D,LSTMNetwork,LSTMDuelingNetwork
 from .evaluations import Evaluator,EarlyEvaluation
 import pandas as pd
 
@@ -76,9 +76,14 @@ class Documenter:
         with open(paths["configs_path"], "r") as f:
             configs = json.load(f) 
 
-        early_model = LSTMNetwork(**configs["early_model_kwargs"])
+        try:
+            early_model = LSTMNetwork(**configs["early_model_kwargs"])
+            early_model.load_state_dict(torch.load(paths["early_model_path"]))
+        except Exception as e:
+            early_model = LSTMDuelingNetwork(**configs["early_model_kwargs"])
+            early_model.load_state_dict(torch.load(paths["early_model_path"]))
+        
         full_model = LSTMNetwork(**configs["full_model_kwargs"])
-        early_model.load_state_dict(torch.load(paths["early_model_path"]))
         full_model.load_state_dict(torch.load(paths["full_model_path"]))
 
         return Documenter(train_dataset= train_dataset,test_dataset= test_dataset,ood_dataset= ood_dataset,full_model= full_model, early_model= early_model, configs= configs)

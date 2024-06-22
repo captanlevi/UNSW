@@ -1,4 +1,4 @@
-from ..core.flowRepresentation import FlowRepresentation,PacketFlowRepressentation
+from ..core.flowRepresentation import FlowRepresentation,PacketFlowRepressentation,TimeslotRepresentation
 from typing import List
 import json
 import numpy as np
@@ -70,6 +70,30 @@ def getActivityArrayFromFlow(flow : FlowRepresentation):
     activity_array = np.clip(activity_array,a_max= 1, a_min= 0)
     # must transpose the array as flow has (numbands, timesteps)
     return activity_array.T
+
+
+
+def getActivityArrayFromTimeslotRep(flow : TimeslotRepresentation):
+    """
+    Takes a flow and returns a global normalized array
+    Dividing the packetlength by the band_thresholds 
+
+    returns array of shape ((num_thresholds)*2, seq_lens)
+    """
+    band_thresholds = flow.flow_config.band_thresholds[:]
+    band_thresholds.append(1500)
+    band_thresholds = np.array(band_thresholds).reshape(-1,1)
+
+    ratio_array_byte = flow.down_bytes.sum(axis = 0,keepdims = True)/(flow.up_bytes + flow.down_bytes + 1e-8).sum(axis = 0,keepdims = True)
+    ratio_array_packet = flow.down_packets.sum(axis = 0,keepdims = True)/(flow.up_packets + flow.down_packets + 1e-8).sum(axis = 0,keepdims = True)
+    timeslots_since_last = np.log(flow.timeslots_since_last + 1e-8).reshape(1,-1)/np.log(1000)
+
+    activity_array = np.concatenate([flow.up_packets_length/band_thresholds,flow.down_packets_length/band_thresholds,ratio_array_byte,ratio_array_packet, timeslots_since_last])
+    activity_array = np.clip(activity_array,a_max= 1, a_min= 0)
+    # must transpose the array as flow has (numbands, timesteps)
+    return activity_array.T
+
+
 
 
 def maxNormalizeFlow(flow : FlowRepresentation):
@@ -207,10 +231,3 @@ def dropPacketFromPacketRep(flow_rep : PacketFlowRepressentation, required_lengt
     aug_rep = PacketFlowRepressentation(lengths= lengths, directions= directions, inter_arrival_times= inter_arrival_times,class_type= flow_rep.class_type)
     aug_rep = aug_rep.getSubFlow(start_index=0, length= required_length)
     return aug_rep
-
-
-
-
-
-
-

@@ -27,7 +27,7 @@ class MemoryFiller:
     def processSingleSample(self,data):
         flow, label = data["data"], data["label"]
         memory_elements : List[MemoryElement] = []
-        for length in range(self.min_length, self.max_length+1):
+        for length in range(self.min_length, len(flow) + 1):
             for action in self.actions:
                 state = State(timeseries= flow,label= label,length= length)
                 reward, terminate = self.rewarder.reward(state= state,action= action)
@@ -44,6 +44,20 @@ class MemoryFiller:
                 memory_elements.append(memory_element)
         return memory_elements
     
+    def collateFun(self,x):
+        """
+        Using this function as a workaround now that I want variable length of timesteps in datasets
+        """
+        values = dict(
+            data = [],
+            label = []
+        )
+
+        for ele in x:
+            values["data"].append(ele["data"])
+            values["label"].append(ele["label"])
+        return values
+
     def getMemoryElements(self,is_ood):
         original_aug = self.dataset.aug
         if is_ood == True:
@@ -51,14 +65,14 @@ class MemoryFiller:
 
         loader = None
         if self.use_balancer == False:
-            loader = DataLoader(dataset= self.dataset,batch_size= 64, shuffle= True)
+            loader = DataLoader(dataset= self.dataset,batch_size= 64, shuffle= True, collate_fn= self.collateFun)
         else:
-            loader = DataLoader(dataset= self.dataset,batch_size= 64,sampler= ImbalancedDatasetSampler(self.dataset))
+            loader = DataLoader(dataset= self.dataset,batch_size= 64,sampler= ImbalancedDatasetSampler(self.dataset),collate_fn= self.collateFun)
 
         memory_elements = []
         for batch in loader:
-            batch_data = batch["data"].numpy()
-            batch_labels = batch["label"].numpy()
+            batch_data = batch["data"]
+            batch_labels = batch["label"]
             for data,label in zip(batch_data,batch_labels):
                 if is_ood == True and random.random() <= self.ood_config["ood_prob"]:
                     label = -1
@@ -66,7 +80,6 @@ class MemoryFiller:
                 else:
                     memory_elements.extend(self.processSingleSample(dict(data = data, label = label)))
 
-        
         self.dataset.aug = original_aug
         return memory_elements
     
@@ -91,4 +104,31 @@ class MemoryFiller:
 
 
 
-        
+class MemoryFillerV2(MemoryFiller):
+    def __init__(self, dataset, rewarder: Rewarder, min_length: int, max_length, ood_config, use_balancer: bool):
+        super().__init__(dataset, rewarder, min_length, max_length, ood_config, use_balancer)
+        self.actions = [0,1]
+    
+
+    def processSingleSample(self,data):
+        flow, label = data["data"], data["label"]
+        memory_elements : List[MemoryElement] = []
+        for length in range(self.min_length, self.max_length+1):
+            for action in self.actions:
+                state = State(timeseries= flow,label= label,length= length)
+                reward = 0
+                terminate = False
+                if action == 1 or length == self.max_length:
+                    terminate = True
+                
+                next_state = State(timeseries= flow,label= label,length= length + 1)
+                if terminate == True:
+                    # I am reducing the length as I will ahve to pass the state to LSTM 
+                    # So I instead of filtering I will just zero all terminal states later.
+                    next_state.length -= 1
+                    next_state.setTerminal()
+
+                
+                memory_element = MemoryElement(state= state,action= action,reward= reward,next_state= next_state)
+                memory_elements.append(memory_element)
+        return memory_elements

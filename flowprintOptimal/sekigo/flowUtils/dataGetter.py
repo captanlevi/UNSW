@@ -1,6 +1,6 @@
 import pandas as pd
 from .commons import loadFlows
-from ..core.flowRepresentation import PacketFlowRepressentation
+from ..core.flowRepresentation import PacketFlowRepressentation, TimeslotRepresentation
 from ..dataAnalysis.vNATDataFrameProcessor import VNATDataFrameProcessor
 from sklearn.model_selection import train_test_split
 from typing import List, Dict
@@ -19,39 +19,39 @@ def getFlowLength(data_point):
 
 
 
-def balanceFlows(packet_flow_reps):
-    count_dict =  dict(pd.Series(map(lambda x : x.class_type, packet_flow_reps)).value_counts())
+def balanceFlows(flow_reps):
+    count_dict =  dict(pd.Series(map(lambda x : x.class_type, flow_reps)).value_counts())
     counts = sorted(list(count_dict.values()))
     alpha = counts[0]/counts[-1]
     keep_number = int(counts[-1]*alpha + counts[0]*(1- alpha))
     print("keep_number = {}".format(keep_number))
 
-    balanced_packet_flow_reps = []
+    balanced_flow_reps = []
 
-    for packet_flow_rep in packet_flow_reps:
-        class_count = count_dict[packet_flow_rep.class_type]
+    for flow_rep in flow_reps:
+        class_count = count_dict[flow_rep.class_type]
 
         if class_count <= keep_number:
-            balanced_packet_flow_reps.append(packet_flow_rep)
+            balanced_flow_reps.append(flow_rep)
         else:
             drop_chance = (class_count - keep_number)/class_count
             if random.random() > drop_chance:
-                balanced_packet_flow_reps.append(packet_flow_rep)
+                balanced_flow_reps.append(flow_rep)
 
 
-    return balanced_packet_flow_reps
+    return balanced_flow_reps
 
 
-def samplePoints(packet_flow_reps : List[PacketFlowRepressentation],min_gap,max_gap,length):
-    sampled_packet_flow_reps = []
-    for packet_flow_rep in packet_flow_reps:
+def samplePoints(flow_reps : List[PacketFlowRepressentation| TimeslotRepresentation],min_gap,max_gap,length):
+    sampled_flow_reps = []
+    for packet_flow_rep in flow_reps:
         start_index = 0
 
         while start_index + length < len(packet_flow_rep.lengths) + 1:
-            sampled_packet_flow_reps.append(packet_flow_rep.getSubFlow(start_index= start_index,length= length))
+            sampled_flow_reps.append(packet_flow_rep.getSubFlow(start_index= start_index,length= length))
             start_index = start_index + length + min_gap + int((max_gap - min_gap)*random.random())
 
-    return sampled_packet_flow_reps
+    return sampled_flow_reps
 
 
 def assignUNibsClass(class_type):
@@ -67,7 +67,7 @@ def assignUNibsClass(class_type):
     else:
         return "OTHER"
 
-def getTrainTestOOD(dataset_name, packet_limit ,test_size,ood_classes = None,subsampleConfig : Dict = None, do_balance = False,max_flow_length = None):
+def getTrainTestOOD(dataset_name,min_timesteps, max_timesteps,test_size,data_type = "packet_representation",ood_classes = None,subsampleConfig : Dict = None, do_balance = False,max_flow_length = None):
     """
     subSampleConfig if provided has 
     {
@@ -76,61 +76,71 @@ def getTrainTestOOD(dataset_name, packet_limit ,test_size,ood_classes = None,sub
     """
     
     if dataset_name == "unibs":
-        packet_flow_reps = loadFlows(path= "data/unibs/unibs.json", cls= PacketFlowRepressentation)
-        for packet_flow_rep in packet_flow_reps:
-            packet_flow_rep.class_type = assignUNibsClass(class_type= packet_flow_rep.class_type)
+        if data_type == "packet_representation":
+            flow_reps = loadFlows(path= "data/unibs/unibsPacketRep.json", cls= PacketFlowRepressentation)
+        else:
+            flow_reps = loadFlows(path= "data/unibs/unibsTimeslotRep.json", cls= TimeslotRepresentation)
+        for flow_rep in flow_reps:
+            flow_rep.class_type = assignUNibsClass(class_type= flow_rep.class_type)
         
     elif dataset_name == "VNAT":
-        packet_flow_reps = VNATDataFrameProcessor.getPacketFlows()
-        packet_flow_reps = VNATDataFrameProcessor.convertLabelsToTopLevel(flows= packet_flow_reps)
+        if data_type == "packet_representation":
+            flow_reps = loadFlows(path= "data/VNAT/flowStore/vnatPacketRep.json", cls= PacketFlowRepressentation)#VNATDataFrameProcessor.getPacketFlows()
+        else:
+            flow_reps = loadFlows(path= "data/VNAT/flowStore/vnatTimeslotRep.json", cls= TimeslotRepresentation)
+        flow_reps = VNATDataFrameProcessor.convertLabelsToTopLevel(flows= flow_reps)
     elif dataset_name == "UTMobileNet2021":
-        flows = loadFlows(path= "data/UTMobileNet2021/mobilenetPacketRep.json", cls= PacketFlowRepressentation)
+        if data_type == "packet_representation":
+            flows = loadFlows(path= "data/UTMobileNet2021/mobilenetPacketRep.json", cls= PacketFlowRepressentation)
+        else:
+            flows = loadFlows(path= "data/UTMobileNet2021/mobilenetTimeslotRep.json", cls= TimeslotRepresentation)
         keep_class = set(["facebook","gmail", "google-drive", "google-maps","hangout","instagram","messenger","netflix", "pinterest", "reddit", "spotify","twitter", "youtube"])
-        packet_flow_reps = flows
-        packet_flow_reps = list(filter(lambda x : x.class_type in keep_class, packet_flow_reps))
+        flow_reps = flows
+        flow_reps = list(filter(lambda x : x.class_type in keep_class, flow_reps))
     else:
         assert False, "dataset name not recognized -- {}".format(dataset_name)
     
 
     print("full class distrubation")
-    print(pd.Series(map(lambda x : x.class_type,packet_flow_reps)).value_counts())
+    print(pd.Series(map(lambda x : x.class_type,flow_reps)).value_counts())
 
     # filtering flows with at least packet_limit packets in it
-    packet_flow_reps = list(filter(lambda x : len(x) >= packet_limit, packet_flow_reps))
+    flow_reps = list(filter(lambda x : len(x) >= min_timesteps, flow_reps))
     if subsampleConfig == None:
         print("using no sampling")
-        packet_flow_reps = list(map(lambda x : x.getSubFlow(0,packet_limit), packet_flow_reps))
+        flow_reps = list(map(lambda x : x.getSubFlow(0,min(len(x), max_timesteps)), flow_reps))
 
     else:
+        flow_reps = list(filter(lambda x : len(x) >= max_timesteps, flow_reps))
         print("using subsampling with {}".format(subsampleConfig))
-        packet_flow_reps = samplePoints(packet_flow_reps= packet_flow_reps, length= packet_limit, min_gap= subsampleConfig["min_gap"], max_gap= subsampleConfig["max_gap"])
+        flow_reps = samplePoints(flow_reps= flow_reps, length= max_timesteps, min_gap= subsampleConfig["min_gap"], max_gap= subsampleConfig["max_gap"])
      
 
-    if max_flow_length != None:
+    if max_flow_length != None and data_type == "packet_representation":
         print("filtering max_flow_length = {}".format(max_flow_length))
-        packet_flow_reps = list(filter(lambda x : getFlowLength(x) <= max_flow_length, packet_flow_reps))
+        flow_reps = list(filter(lambda x : getFlowLength(x) <= max_flow_length, flow_reps))
 
 
     if do_balance == True:
         print("balancing")
-        packet_flow_reps = balanceFlows(packet_flow_reps= packet_flow_reps)
+        flow_reps = balanceFlows(flow_reps= flow_reps)
     print("post num packet filter class distrubation")
-    print(pd.Series(map(lambda x : x.class_type,packet_flow_reps)).value_counts())
+    print(pd.Series(map(lambda x : x.class_type,flow_reps)).value_counts())
 
 
     if ood_classes != None:
-        id_packet_flow_reps = list(filter(lambda x : x.class_type not in  ood_classes, packet_flow_reps))
-        ood_packet_flow_reps = list(filter(lambda x : x.class_type in ood_classes, packet_flow_reps))
+        id_flow_reps = list(filter(lambda x : x.class_type not in  ood_classes, flow_reps))
+        ood_flow_reps = list(filter(lambda x : x.class_type in ood_classes, flow_reps))
     else:
-        id_packet_flow_reps = packet_flow_reps
-        ood_packet_flow_reps = None
+        id_flow_reps = flow_reps
+        ood_flow_reps = None
     
-    labels = list(map(lambda x : x.class_type,id_packet_flow_reps))
-    train_flows,test_flows,train_labels,test_labels = train_test_split(id_packet_flow_reps,labels,test_size= test_size)
+    labels = list(map(lambda x : x.class_type,id_flow_reps))
+    train_flows,test_flows,train_labels,test_labels = train_test_split(id_flow_reps,labels,test_size= test_size)
     print("---"*10)
     print("train class distrubation")
     print(pd.Series(train_labels).value_counts())
     print("test class distrubation")
     print(pd.Series(test_labels).value_counts())
 
-    return train_flows,test_flows,ood_packet_flow_reps
+    return train_flows,test_flows,ood_flow_reps

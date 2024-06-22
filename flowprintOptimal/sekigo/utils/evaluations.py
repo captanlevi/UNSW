@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
+from torch.nn.utils.rnn import pack_sequence, unpack_sequence
 
 
 def evaluateModelOnDataSet(dataset ,model : nn.Module,device : str,calc_f1 = True):
@@ -68,10 +69,10 @@ class Evaluator:
         predicted,y_true,labels = np.array(predicted),np.array(y_true), np.array(labels)
         _,_,micro_f1,_ = precision_recall_fscore_support(y_true = y_true, y_pred= predicted, average= "micro",zero_division=0)
         _,_,macro_f1,_ = precision_recall_fscore_support(y_true= y_true, y_pred= predicted, average= "macro",zero_division=0)
-        incorrect_ood = (predicted == -1).sum()/ len(predicted)
+      
         accuracy = accuracy_score(y_true= y_true, y_pred= predicted)
         cm = confusion_matrix(y_true= y_true, y_pred= predicted, labels= labels)
-        return dict(micro_f1 = micro_f1,macro_f1 = macro_f1, accuracy = accuracy, cm = cm, incorrect_ood = incorrect_ood)
+        return dict(micro_f1 = micro_f1,macro_f1 = macro_f1, accuracy = accuracy, cm = cm)
     
 
     def predictOnDataset(self,dataset):
@@ -113,17 +114,25 @@ class EarlyEvaluation(Evaluator):
         """
         predictions are of shape (seq_len)
         """
-        
-        for time in range(self.min_steps,len(prediction)):
+        # min_steps - 1 as if the min steps is 5 then after proccessing the 5th timestep index will be 4 !!!!
+        for time in range(self.min_steps -1,len(prediction)):
             if prediction[time] < num_classes:
                 return (prediction[time],time + 1)
         
         return (-1,len(prediction))
 
+    def collateFn(self,batch):   
+        data = list(map(lambda x : torch.tensor(x["data"]).float(),batch ))
+        label = list(map(lambda x : torch.tensor(x["label"]).float(),batch ))
 
+        data = pack_sequence(data,enforce_sorted= False)
+
+        return dict(
+            data = data, label = torch.tensor(label)
+        )
 
     def predictOnDataset(self,dataset):
-        dataloader = DataLoader(dataset= dataset, batch_size = 64)
+        dataloader = DataLoader(dataset= dataset, batch_size = 64,collate_fn= self.collateFn)
         self.model.eval()
         with torch.no_grad():
 
@@ -131,8 +140,10 @@ class EarlyEvaluation(Evaluator):
             predictions_time = []
             for batch in dataloader:
                 batch_X,batch_y = batch["data"].float().to(self.device), batch["label"].to(self.device)
-                predicted = self.predictStep(batch_X = batch_X).cpu().numpy() # (BS,seq_len)
-                processed_predictions = map(lambda x : self.__processSinglePrediction(x,len(dataset.label_to_index)), predicted)
+                predicted = self.predictStep(batch_X = batch_X)  # (list of seq_len) , (list of last_pred )
+                predicted = list(map(lambda x : x.cpu().numpy().tolist(), predicted))
+                processed_predictions = list(map(lambda x : self.__processSinglePrediction(x,len(dataset.label_to_index)), predicted))
+
 
                 predictions_time.extend(processed_predictions)
                 labels.extend(batch_y.cpu().numpy().tolist())
@@ -140,7 +151,9 @@ class EarlyEvaluation(Evaluator):
 
         self.model.train()
         predictions_time = np.array(predictions_time)
+        
         predictions, time = predictions_time[:,0], predictions_time[:,1]
+        labels = np.array(labels)
 
         return predictions,time,labels
     
@@ -153,7 +166,9 @@ class EarlyEvaluation(Evaluator):
         with torch.no_grad():
             model_out = self.model.earlyClassificationForward(batch_X)[0]
         self.model.train()
-        return torch.argmax(model_out,dim= -1)
+        # model_out is a list( (BS,seq_len,num_classes + 1))
+        return map(lambda x : torch.argmax(x,dim= -1), model_out)# returning list(seq_len)
+        #return torch.argmax(model_out,dim= -1)
     
 
 
@@ -163,9 +178,19 @@ class EarlyEvaluation(Evaluator):
 
         if dataset != None:
             predictions,time,y_true = self.predictOnDataset(dataset= dataset)
-            labels = list(range(0,len(dataset.label_to_index)))
+            labels = np.array(list(range(0,len(dataset.label_to_index))))
+
+            incorrect_ood = (predictions == -1).sum()/ len(predictions)
+
+            included = predictions != -1
+            predictions = predictions[included]
+            time = time[included]
+            y_true = y_true[included]
+            
+
             metrices = self.classificationScores(predicted= predictions, labels= labels, y_true= y_true)
             metrices["time"] =  time.mean()
+            metrices["incorrect_ood"] = incorrect_ood
 
         if ood_dataset != None:
             predictions,time,_ = self.predictOnDataset(dataset= ood_dataset)
@@ -179,4 +204,56 @@ class EarlyEvaluation(Evaluator):
         return metrices
 
 
+
+class EarlyEvaluationV2(EarlyEvaluation):
+    def __init__(self, min_steps, device, model, decider):
+        super().__init__(min_steps, device, model)
+        self.decider = decider.to(self.device)
+
+
+    def predictStep(self, batch_X):
+        self.model.eval()
+        with torch.no_grad():
+            model_out, model_features = self.model.earlyClassificationForward(batch_X)
+            decider_out = self.decider(model_features)
+        self.model.train()
+        return torch.argmax(model_out,dim= -1), torch.argmax(decider_out, dim = -1)
+    
+
+    def __processSinglePrediction(self,prediction,validities):
+        """
+        predictions are of shape (seq_len)
+        validities are of shape (seq_len)
+        """
         
+        for time in range(self.min_steps,len(prediction)):
+            if validities[time] == 1:
+                return (prediction[time],time)
+        
+        return (-1,len(prediction))
+        
+    
+    def predictOnDataset(self,dataset,enforce_prediction):
+        dataloader = DataLoader(dataset= dataset, batch_size = 64)
+        self.model.eval()
+        with torch.no_grad():
+
+            labels = []
+            predictions_time = []
+            for batch in dataloader:
+                batch_X,batch_y = batch["data"].float().to(self.device), batch["label"].to(self.device)
+                predicted, validities = self.predictStep(batch_X = batch_X) # (BS,seq_len)
+                predicted,validities = predicted.cpu().numpy(), validities.cpu().numpy()
+                processed_predictions = []
+                for i in range(len(predicted)):
+                    processed_predictions.append(self.__processSinglePrediction(prediction= predicted[i], validities= validities[i]))
+
+                predictions_time.extend(processed_predictions)
+                labels.extend(batch_y.cpu().numpy().tolist())
+
+
+        self.model.train()
+        predictions_time = np.array(predictions_time)
+        predictions, time = predictions_time[:,0], predictions_time[:,1]
+
+        return predictions,time,labels

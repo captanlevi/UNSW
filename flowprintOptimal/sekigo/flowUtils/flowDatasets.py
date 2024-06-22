@@ -1,8 +1,8 @@
 from typing import List
-from ..core.flowRepresentation import FlowRepresentation
+from ..core.flowRepresentation import FlowRepresentation, TimeslotRepresentation
 import datetime
 from torch.utils.data import Dataset
-from .commons import getActivityArrayFromFlow, maxNormalizeFlow
+from .commons import getActivityArrayFromFlow, maxNormalizeFlow , getActivityArrayFromTimeslotRep
 import numpy as np
 import random
 from ..utils.commons import augmentData
@@ -56,44 +56,18 @@ class ActivityDataset(BaseFlowDataset):
 
 
 class DDQNActivityDataset(BaseFlowDataset):
-    def __init__(self, flows: List[FlowRepresentation], label_to_index: dict,do_aug = False):
+    def __init__(self, flows: List[FlowRepresentation| TimeslotRepresentation], label_to_index: dict,aug = None):
         super().__init__(flows = flows, label_to_index= label_to_index)
-        self.do_aug = do_aug
+        self.aug = aug
         self.labels = list(map(lambda x : self.label_to_index[x.class_type],self.flows))
-        self.flows = list(map(lambda x : getActivityArrayFromFlow(x), self.flows))
+        if isinstance(flows[0], TimeslotRepresentation):
+            self.flows =  list(map(lambda x : getActivityArrayFromTimeslotRep(x), self.flows))
+        else:
+            self.flows = list(map(lambda x : getActivityArrayFromFlow(x), self.flows))
     
     def __getitem__(self, index):
-        return dict(data = self.flows[index] if (self.do_aug == False) else augmentData(self.flows[index],fraction_range= [0,.1]), label  = self.labels[index])
+        return dict(data = self.flows[index] if (self.aug == None) else augmentData(self.flows[index],fraction_range= self.aug), label  = self.labels[index])
     
-    def cureImbalance(self):
-        
-        label_to_indices = dict()
-        for i,label in enumerate(self.labels):
-            if label not in label_to_indices:
-                label_to_indices[label] = []
-            label_to_indices[label].append(i)
-        
-        
-        counts = [len(x) for _,x in label_to_indices.items()]
-        max_counts = max(counts)
-
-        added_flows,added_labels = [],[]
-        for label,indices in label_to_indices.items():
-            to_add = max_counts - len(indices)
-
-            if to_add > 0:
-                replication_indices = random.choices(population= indices,k= to_add)
-            
-            for replication_index in replication_indices:
-                added_flows.append(self.flows[replication_index].copy())
-                added_labels.append(self.labels[replication_index])
-        
-
-
-        self.flows.extend(added_flows)
-        self.labels.extend(added_labels)
-            
-
     def get_labels(self):
         return self.labels
 

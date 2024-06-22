@@ -66,7 +66,68 @@ class LSTMNetwork(BaseLSTMNetwork):
 
 
      
+class LSTMDuelingNetwork(BaseLSTMNetwork):
+    def __init__(self,lstm_input_size,lstm_hidden_size,output_dim,layers = 1) -> None:
+        super().__init__(lstm_hidden_size=lstm_hidden_size,lstm_input_size=lstm_input_size,layers= layers)
+        self.output_dim = output_dim
+        self.value_linear = nn.Sequential(nn.Linear(lstm_hidden_size,lstm_hidden_size//2), nn.ReLU(),
+                                           nn.Linear(lstm_hidden_size//2, lstm_hidden_size//2), nn.ReLU(),
+                                           nn.Linear(lstm_hidden_size//2, 1)
+                                           )
+        self.advantage_linear = nn.Sequential(nn.Linear(lstm_hidden_size,lstm_hidden_size//2), nn.ReLU(),
+                                    nn.Linear(lstm_hidden_size//2, lstm_hidden_size//2), nn.ReLU(),
+                                    nn.Linear(lstm_hidden_size//2, output_dim)
+                                    )
+
+    def forward(self,X):
+        """
+        X is the timeseries input of shape 
+        (BS,Seq len, lstm_input_size)
+        OR
+        packed_sequence
+
+        The output is of shape (BS,num_classes)
+        """
+        lstm_out, _ = self.lstm(X)
+        if isinstance(X,torch.Tensor):
+            lstm_out = lstm_out[:,-1,:]
+        else:
+            lstm_out = self._unpackAndGetFeatureFromLSTMOutput(lstm_out= lstm_out)
+
+
+        #lstm_out = lstm_out#/torch.linalg.norm(lstm_out,dim = -1,keepdims = True)
+        values = self.value_linear(lstm_out)
+        advantage = self.advantage_linear(lstm_out)
+        out = advantage - torch.mean(advantage,dim= -1, keepdim= True) + values
+        return out,lstm_out
     
+
+    def earlyClassificationForward(self,X):
+        """
+        X is the timeseries input of shape 
+        (BS,Seq len, lstm_input_size)
+        outputs (BS,seq_len,feature_len)
+        """
+        with torch.no_grad():
+            if isinstance(X,torch.Tensor):
+                lstm_out, _ = self.lstm(X)
+                advantage = self.advantage_linear(lstm_out)
+                values = self.value_linear(lstm_out)
+                out = advantage - torch.mean(advantage,dim= -1, keepdim= True) + values
+                return out,lstm_out
+            else:
+                # in the case where X is a packed sequencce
+                lstm_out, _ = self.lstm(X)
+                lstm_out = unpack_sequence(lstm_out) # this is a list of tensors of shape (seq_len,hidden_dim)
+
+                outs = []
+                for seq in lstm_out:
+                    advantage = self.advantage_linear(seq) # (seq_len,num_classes + 1)
+                    values = self.value_linear(seq) # (seq_len,1)
+                    outs.append( advantage - torch.mean(advantage,dim= -1, keepdim= True) + values)  # appended (seq_len,num_classes + 1)
+                return outs, lstm_out
+
+
 
 
 

@@ -31,7 +31,8 @@ class MemoryDataset(Dataset):
             reward = memory.reward,
             action = memory.action,
             state_length = state_length,
-            label = memory.state.label
+            label = memory.state.label,
+            index = index
         )
         
 
@@ -42,8 +43,8 @@ class MemoryDataset(Dataset):
     def __len__(self):
         return len(self.memories)
     
-
-    def collateFn(self,batch):   
+    @staticmethod
+    def collateFn(batch):   
         state = list(map(lambda x : torch.tensor(x["state"]).float(),batch ))
         next_state = list(map(lambda x : torch.tensor(x["next_state"]).float(), batch))
 
@@ -55,11 +56,15 @@ class MemoryDataset(Dataset):
         reward = torch.tensor(list(map(lambda x : x["reward"],batch))).float()
         action = torch.tensor(list(map(lambda x : x["action"],batch))).long()
         label = torch.tensor(list(map(lambda x : x["label"], batch))).long()
-
+        index = torch.tensor(list(map(lambda x : x["index"], batch))).long()
         state_length = torch.tensor(list(map(lambda x :x["state_length"], batch))).int()
         return dict(
-            state = state, next_state = next_state, action = action, reward = reward,is_terminal = is_terminal,state_length = state_length,label = label
+            state = state, next_state = next_state, action = action, reward = reward,
+            is_terminal = is_terminal,state_length = state_length,label = label, index = index
         )
+    
+
+
     
 
 

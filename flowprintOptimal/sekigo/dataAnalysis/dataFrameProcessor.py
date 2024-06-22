@@ -238,7 +238,7 @@ class UTMobileNetProcessor:
                 conn_df = pd.concat([flow_dict[key],flow_dict[rev_key]])
                 conn_df.sort_values(by= "timestamp",inplace= True)
 
-                if len(conn_df) >= 30:
+                if len(conn_df) >= 2:
                     conn_dfs.append(conn_df)
             
             included.add(rev_key)
