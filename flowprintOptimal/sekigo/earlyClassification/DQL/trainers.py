@@ -92,8 +92,8 @@ class EarlyClassificationtrainer:
         predicted_values_for_taken_action = torch.gather(input= predicted_values, dim= 1,index= action.unsqueeze(-1)).squeeze() # (BS)
         
         with torch.no_grad():
-            next_state_max_actions_model = torch.argmax(self.predictor(next_state)[0],dim = -1,keepdim= True)
-            next_state_values_lag_model = self.lag_predictor(next_state)[0]
+            next_state_max_actions_model = torch.argmax(self.predictor(next_state)[0],dim = -1,keepdim= True) # (BS,1)
+            next_state_values_lag_model = self.lag_predictor(next_state)[0] # (BS,K+1)
             next_state_values_for_max_action = torch.gather(input= next_state_values_lag_model, dim= 1, index= next_state_max_actions_model) # (BS,1)
             next_state_values_for_max_action = next_state_values_for_max_action*(~(is_terminal.unsqueeze(-1)))
             target = reward + lam*(next_state_values_for_max_action.squeeze()) # (BS)

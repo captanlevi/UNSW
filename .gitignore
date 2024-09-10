@@ -1,5 +1,8 @@
 # Ignore the "data" folder
 data/
-
+results/
+results1/
+models/
+storage/
 # Ignore all CSV files
 *.csv

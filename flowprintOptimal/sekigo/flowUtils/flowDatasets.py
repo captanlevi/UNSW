@@ -60,13 +60,20 @@ class DDQNActivityDataset(BaseFlowDataset):
         super().__init__(flows = flows, label_to_index= label_to_index)
         self.aug = aug
         self.labels = list(map(lambda x : self.label_to_index[x.class_type],self.flows))
-        if isinstance(flows[0], TimeslotRepresentation):
-            self.flows =  list(map(lambda x : getActivityArrayFromTimeslotRep(x), self.flows))
-        else:
-            self.flows = list(map(lambda x : getActivityArrayFromFlow(x), self.flows))
+        self.flows = flows
+        self.num_packets = [(x.down_packets + x.up_packets).sum(axis = 0) for x in flows]
+
+        
     
     def __getitem__(self, index):
-        return dict(data = self.flows[index] if (self.aug == None) else augmentData(self.flows[index],fraction_range= self.aug), label  = self.labels[index])
+        flow = self.flows[index]
+        data = None
+        if isinstance(flow, TimeslotRepresentation):
+            data = getActivityArrayFromTimeslotRep(flow)
+        else:
+            data = getActivityArrayFromFlow(flow)
+
+        return dict(data = data if (self.aug == None) else augmentData(data,fraction_range= self.aug), label  = self.labels[index], num_packets = self.num_packets[index])
     
     def get_labels(self):
         return self.labels
@@ -90,15 +97,22 @@ class MaxNormalizedDataset(BaseFlowDataset):
 
 
 class PacketFlowDataset(Dataset):
-    def __init__(self,flows,label_to_index,aug = None):
+    def __init__(self,flows,label_to_index,aug = None, fixed_length = None):
         # aug is a range of augmentation on such good for training is [0,.4]
         super().__init__()
+
+        if fixed_length != None:
+            flows = list(filter(lambda x : len(x) >= fixed_length, flows))
+            flows = [x.getSubFlow(0,fixed_length) for x in flows]
         self.flows = flows
+        self.fixed_length = fixed_length
         self.aug = aug
         if label_to_index == None:
             self.label_to_index = self.__getLabelDict()
         else:
             self.label_to_index = label_to_index
+
+        self.num_packets = [[1]*len(x) for x in self.flows]
 
 
     
@@ -115,7 +129,7 @@ class PacketFlowDataset(Dataset):
     def __getitem__(self, index):
         flow = self.flows[index]
         data = self.getDataItem(index= index, aug= self.aug)
-        return dict(data = data,label = self.label_to_index[flow.class_type])
+        return dict(data = data,label = self.label_to_index[flow.class_type], num_packets = self.num_packets[index])
 
     def __getLabelDict(self):
         # do not change this function the labels must of zero indixed if not it will break the DDQN training

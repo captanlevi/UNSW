@@ -8,6 +8,8 @@ import random
 import numpy as np
 import datetime
 from .commons import getTimeStampsFromIAT
+from ..flowUtils.conversions import convertPacketRepToTimeslotRepEffecient
+from joblib import Parallel, delayed
 
 
 
@@ -19,7 +21,7 @@ def getFlowLength(data_point):
 
 
 
-def balanceFlows(flow_reps):
+def balanceFlows(flow_reps, return_indices = False):
     count_dict =  dict(pd.Series(map(lambda x : x.class_type, flow_reps)).value_counts())
     counts = sorted(list(count_dict.values()))
     alpha = counts[0]/counts[-1]
@@ -27,19 +29,24 @@ def balanceFlows(flow_reps):
     print("keep_number = {}".format(keep_number))
 
     balanced_flow_reps = []
+    chosen_indices = []
 
-    for flow_rep in flow_reps:
+    for i,flow_rep in enumerate(flow_reps):
         class_count = count_dict[flow_rep.class_type]
 
         if class_count <= keep_number:
             balanced_flow_reps.append(flow_rep)
+            chosen_indices.append(i)
         else:
             drop_chance = (class_count - keep_number)/class_count
             if random.random() > drop_chance:
                 balanced_flow_reps.append(flow_rep)
+                chosen_indices.append(i)
 
-
-    return balanced_flow_reps
+    if return_indices == False:
+        return balanced_flow_reps
+    else:
+        return balanced_flow_reps,chosen_indices
 
 
 def samplePoints(flow_reps : List[PacketFlowRepressentation| TimeslotRepresentation],min_gap,max_gap,length):
@@ -54,6 +61,9 @@ def samplePoints(flow_reps : List[PacketFlowRepressentation| TimeslotRepresentat
     return sampled_flow_reps
 
 
+
+
+
 def assignUNibsClass(class_type):
     class_type = class_type.lower().strip()
     if class_type in ["amule","transmission", "bittorrent.exe"]:
@@ -66,6 +76,13 @@ def assignUNibsClass(class_type):
         return "BROWSERS"
     else:
         return "OTHER"
+    
+
+
+
+
+
+
 
 def getTrainTestOOD(dataset_name,min_timesteps, max_timesteps,test_size,data_type = "packet_representation",ood_classes = None,subsampleConfig : Dict = None, do_balance = False,max_flow_length = None):
     """
@@ -97,9 +114,16 @@ def getTrainTestOOD(dataset_name,min_timesteps, max_timesteps,test_size,data_typ
         keep_class = set(["facebook","gmail", "google-drive", "google-maps","hangout","instagram","messenger","netflix", "pinterest", "reddit", "spotify","twitter", "youtube"])
         flow_reps = flows
         flow_reps = list(filter(lambda x : x.class_type in keep_class, flow_reps))
+    elif dataset_name == "mirage":
+        if data_type == "packet_representation":
+            flow_reps = loadFlows(path= "data/MIRAGE-2019/miragePacketRepApp.json", cls= PacketFlowRepressentation)
+        else:
+            flow_reps = loadFlows(path= "data/MIRAGE-2019/mirageTimeslotRepApp.json", cls= TimeslotRepresentation)
+
     else:
         assert False, "dataset name not recognized -- {}".format(dataset_name)
     
+
 
     print("full class distrubation")
     print(pd.Series(map(lambda x : x.class_type,flow_reps)).value_counts())
@@ -116,11 +140,17 @@ def getTrainTestOOD(dataset_name,min_timesteps, max_timesteps,test_size,data_typ
         flow_reps = samplePoints(flow_reps= flow_reps, length= max_timesteps, min_gap= subsampleConfig["min_gap"], max_gap= subsampleConfig["max_gap"])
      
 
+    print("hererererer")
+    print(flow_reps[0].uid)
+
+
     if max_flow_length != None and data_type == "packet_representation":
         print("filtering max_flow_length = {}".format(max_flow_length))
         flow_reps = list(filter(lambda x : getFlowLength(x) <= max_flow_length, flow_reps))
 
 
+    print("hererererer")
+    print(flow_reps[0].uid)
     if do_balance == True:
         print("balancing")
         flow_reps = balanceFlows(flow_reps= flow_reps)

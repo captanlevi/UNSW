@@ -5,6 +5,9 @@ from ..core.flowRepresentation import PacketFlowRepressentation
 from ..flowUtils.commons import normalizePacketRep
 from tqdm import tqdm
 from joblib import delayed, Parallel
+import json
+from typing import List
+
 
 class BaseDataFrameProcessor:
     
@@ -254,3 +257,133 @@ class UTMobileNetProcessor:
             row['ip.dst'] = row['ip.dst'].split(',')[1]
         return row
     
+
+
+
+
+class MirageProcessor:
+
+
+    label_to_app_mapping = {
+    "com.pinterest" : "Pinterest",
+    "com.facebook.katana" : "Facebook",
+    "com.spotify.music" : "Spotify",
+    "com.contextlogic.wish" : "Wish",
+    "com.groupon" : "Groupon",
+    "com.tripadvisor.tripadvisor" : "TripAdvisor",
+    "com.dropbox.android" : "Dropbox",
+    "com.trello" : "Trello",
+    "com.viber.voip" : "Viber",
+    "com.facebook.orca" : "Messenger",
+    "com.twitter.android" : "Twitter",
+    "com.google.android.youtube" : "Youtube",
+    "de.motain.iliga" : "OneFootball",
+    "com.accuweather.android" : "AccuWeather",
+    "com.iconology.comics" : "Comics",
+    "com.joelapenna.foursquared" : "FourSquare",
+    "it.subito" : "Subito",
+    "com.duolingo" : "Duolingo",
+    "com.waze" : "Waze",
+    "air.com.hypah.io.slither" : "Slither.io"
+    }
+
+
+    label_to_app_catagory_mapping = {
+    "com.pinterest" : "Social",
+    "com.facebook.katana" : "Social",
+    "com.spotify.music" : "Music and Audio",
+    "com.contextlogic.wish" : "Shopping",
+    "com.groupon" : "Shopping",
+    "com.tripadvisor.tripadvisor" : "Travel and Local",
+    "com.dropbox.android" : "Productivity",
+    "com.trello" : "Productivity",
+    "com.viber.voip" : "Communication",
+    "com.facebook.orca" : "Communication",
+    "com.twitter.android" : "News and Magazines",
+    "com.google.android.youtube" : "Video Players",
+    "de.motain.iliga" : "Sports",
+    "com.accuweather.android" : "Weather",
+    "com.iconology.comics" : "Comics",
+    "com.joelapenna.foursquared" : "Travel and Local",
+    "it.subito" : "Lifestyle",
+    "com.duolingo" : "Education",
+    "com.waze" : "Maps & Navigation",
+    "air.com.hypah.io.slither" : "Games"
+    }
+
+    
+    def __init__(self,data_path):
+        self.json_paths = []
+        self.__getJSONPaths(path= data_path)
+
+
+    def __getJSONPaths(self,path):
+        if path.endswith(".json"):
+            self.json_paths.append(path)
+        elif os.path.isdir(path):
+            for item in os.listdir(path):
+                self.__getJSONPaths(path= os.path.join(path,item))
+
+    
+    def __correctLabels(self, packet_reps : List[PacketFlowRepressentation], mode):
+        
+        new_reps = []
+        lookup_dict = None
+        if mode == "app":
+            lookup_dict = MirageProcessor.label_to_app_mapping
+        elif mode == "app_catagory":
+            lookup_dict = MirageProcessor.label_to_app_catagory_mapping
+
+
+        for packet_rep in packet_reps:
+            class_type = packet_rep.class_type
+
+            if class_type not in lookup_dict:
+                continue
+            packet_rep.class_type = lookup_dict[class_type]
+
+            new_reps.append(packet_rep)
+        return new_reps
+        
+
+        
+
+
+    def processSingleJSON(self,path):
+        data = []
+        with open(path, "r") as f:
+            data = json.loads(f.read())
+        keys = list(data.keys())
+
+        packet_reps = []
+        for conn, conn_data in data.items():
+            packet_data = conn_data["packet_data"]
+            
+            directions = packet_data["packet_dir"]
+            lengths = packet_data["L4_payload_bytes"]
+            lengths = list(map(lambda x : x/1500, lengths))
+
+            iat = np.array(packet_data["iat"])
+            iat = np.log(1 + iat*1e6)/np.log(900000)  # converting to micro seconds and dividing by 9 seconds to normalize
+            iat = iat.tolist()
+
+            label = conn_data["flow_metadata"]["BF_label"]
+            packet_rep = PacketFlowRepressentation(lengths= lengths, directions= directions, inter_arrival_times= iat, class_type= label)
+            packet_reps.append(packet_rep)
+
+        return packet_reps
+    
+
+    def getPacketReps(self, mode = "app"):
+        packet_reps = []
+        results = Parallel(n_jobs=10)(delayed(self.processSingleJSON)(path) for path in self.json_paths)
+        for result in results:
+            packet_reps.extend(result)
+
+        return self.__correctLabels(packet_reps= packet_reps, mode= mode)
+
+            
+        
+
+
+        

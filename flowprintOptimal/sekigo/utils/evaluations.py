@@ -86,7 +86,6 @@ class Evaluator:
                 batch_X,batch_y = batch["data"].float().to(self.device), batch["label"].to(self.device)
                 predicted = self.model(batch_X)[0] # (BS,num_class)
                 predicted = torch.argmax(predicted,dim= -1).cpu().numpy()
-                
                 predictions.extend(predicted)
                 labels.extend(batch_y.cpu().numpy().tolist())
 
@@ -108,42 +107,44 @@ class EarlyEvaluation(Evaluator):
     def __init__(self,min_steps,device,model):
         super().__init__(model= model,device= device)
         self.min_steps = min_steps
-    
 
-    def __processSinglePrediction(self,prediction,num_classes):
+    def __processSinglePrediction(self,prediction,num_classes,num_packets):
         """
         predictions are of shape (seq_len)
         """
         # min_steps - 1 as if the min steps is 5 then after proccessing the 5th timestep index will be 4 !!!!
+        packets_used = 0
         for time in range(self.min_steps -1,len(prediction)):
+            packets_used += num_packets[time]
             if prediction[time] < num_classes:
-                return (prediction[time],time + 1)
+                return (prediction[time],packets_used)
         
         return (-1,len(prediction))
 
     def collateFn(self,batch):   
         data = list(map(lambda x : torch.tensor(x["data"]).float(),batch ))
         label = list(map(lambda x : torch.tensor(x["label"]).float(),batch ))
-
+        
+        num_packets = list(map(lambda x : x["num_packets"], batch))
         data = pack_sequence(data,enforce_sorted= False)
 
         return dict(
-            data = data, label = torch.tensor(label)
+            data = data, label = torch.tensor(label), num_packets = num_packets
         )
 
     def predictOnDataset(self,dataset):
         dataloader = DataLoader(dataset= dataset, batch_size = 64,collate_fn= self.collateFn)
-        self.model.eval()
-        with torch.no_grad():
-
+        self.model.eval()                                          
+        with torch.no_grad():                                    
             labels = []
             predictions_time = []
             for batch in dataloader:
                 batch_X,batch_y = batch["data"].float().to(self.device), batch["label"].to(self.device)
+                num_packets = batch["num_packets"] # 2D list [[1,2,1,1], [4,5,3,6]]
                 predicted = self.predictStep(batch_X = batch_X)  # (list of seq_len) , (list of last_pred )
                 predicted = list(map(lambda x : x.cpu().numpy().tolist(), predicted))
-                processed_predictions = list(map(lambda x : self.__processSinglePrediction(x,len(dataset.label_to_index)), predicted))
-
+                processed_predictions = [self.__processSinglePrediction(x,len(dataset.label_to_index),num_p) for x,num_p in zip(predicted,num_packets)]
+                
 
                 predictions_time.extend(processed_predictions)
                 labels.extend(batch_y.cpu().numpy().tolist())
@@ -151,7 +152,6 @@ class EarlyEvaluation(Evaluator):
 
         self.model.train()
         predictions_time = np.array(predictions_time)
-        
         predictions, time = predictions_time[:,0], predictions_time[:,1]
         labels = np.array(labels)
 
@@ -175,7 +175,6 @@ class EarlyEvaluation(Evaluator):
 
     def getMetrices(self, dataset, ood_dataset = None):
         metrices = dict()
-
         if dataset != None:
             predictions,time,y_true = self.predictOnDataset(dataset= dataset)
             labels = np.array(list(range(0,len(dataset.label_to_index))))
@@ -194,7 +193,7 @@ class EarlyEvaluation(Evaluator):
 
         if ood_dataset != None:
             predictions,time,_ = self.predictOnDataset(dataset= ood_dataset)
-            
+    
             ood_accuracy = (predictions == -1).sum()/len(predictions)
             ood_time = time.mean()
 
