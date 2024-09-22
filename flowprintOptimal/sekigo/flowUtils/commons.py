@@ -162,13 +162,18 @@ def minimizeOverlaps(starting_points,requested_interval,required_number_of_point
 def getIATFromTimeStamps(timestamps):
     """
     timestamps is an array of datetime.datetime objects in sorted order
+    or the same order but in np.timestamp
     """
     inter_arrival_times = []
     for i in range(len(timestamps)):
         if i == 0:
             inter_arrival_times.append(0)
         else:
-            inter_arrival_times.append((timestamps[i] - timestamps[i-1]).total_seconds()*1e6)
+            time_diff = (timestamps[i] - timestamps[i-1])
+            if isinstance(time_diff, datetime.timedelta):
+                inter_arrival_times.append(time_diff.total_seconds()*1e6)
+            elif isinstance(time_diff, np.timedelta64):
+                inter_arrival_times.append((time_diff/np.timedelta64(1,"s"))*1e6)
             assert inter_arrival_times[-1] >= 0, "{}".format(inter_arrival_times[-1])
             inter_arrival_times[-1] = np.log(inter_arrival_times[-1] + 1)/np.log(900000)
     return inter_arrival_times

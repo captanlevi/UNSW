@@ -48,6 +48,10 @@ def getFlowReps(dataset_name, max_flow_length):
 
     elif dataset_name == "vnat":
         packet_flow_reps = loadFlows(path= "data/VNAT/flowStore/vnatPacketRep.json", cls= PacketFlowRepressentation)
+
+    elif dataset_name == "deployment":
+        packet_flow_reps = loadFlows(path= "data/deployment/deployment_packet_rep.json", cls= PacketFlowRepressentation)
+        
     else:
         assert False, "dataset name not recognized -- {}".format(dataset_name)
 
