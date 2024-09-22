@@ -1,5 +1,5 @@
 from typing import List
-from ..core.flowRepresentation import FlowRepresentation, TimeslotRepresentation
+from ..core.flowRepresentation import FlowRepresentation, TimeslotRepresentation, PacketFlowRepressentation
 import datetime
 from torch.utils.data import Dataset
 from .commons import getActivityArrayFromFlow, maxNormalizeFlow , getActivityArrayFromTimeslotRep
@@ -97,10 +97,10 @@ class MaxNormalizedDataset(BaseFlowDataset):
 
 
 class PacketFlowDataset(Dataset):
-    def __init__(self,flows,label_to_index,aug = None, fixed_length = None):
+    def __init__(self,flows,label_to_index,aug = None, fixed_length = None,truncate_length = 15):
         # aug is a range of augmentation on such good for training is [0,.4]
         super().__init__()
-
+        self.truncate_length = truncate_length
         if fixed_length != None:
             flows = list(filter(lambda x : len(x) >= fixed_length, flows))
             flows = [x.getSubFlow(0,fixed_length) for x in flows]
@@ -116,8 +116,7 @@ class PacketFlowDataset(Dataset):
 
 
     
-    def getDataItem(self,index,aug):
-        flow = self.flows[index]
+    def getDataItem(self,flow,aug):
         data = np.array([flow.lengths,flow.inter_arrival_times,flow.directions]).T
         return self._augmentData(data= data, aug_lims= aug) if aug != None else data
 
@@ -127,8 +126,12 @@ class PacketFlowDataset(Dataset):
         return len(self.flows)
     
     def __getitem__(self, index):
-        flow = self.flows[index]
-        data = self.getDataItem(index= index, aug= self.aug)
+        flow : PacketFlowRepressentation = self.flows[index]
+        # truncating flow
+        if len(flow) > self.truncate_length:
+            flow = flow.getSubFlow(start_index= 0, length= self.truncate_length)
+
+        data = self.getDataItem(flow= flow, aug= self.aug)
         return dict(data = data,label = self.label_to_index[flow.class_type], num_packets = self.num_packets[index])
 
     def __getLabelDict(self):

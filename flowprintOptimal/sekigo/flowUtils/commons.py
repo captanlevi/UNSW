@@ -201,14 +201,15 @@ def normalizePacketRep(lengths,timestamps,directions):
 
 
 
-def dropPacketFromPacketRep(flow_rep : PacketFlowRepressentation, required_length,max_drop_rate):
+def dropPacketFromPacketRep(flow_rep : PacketFlowRepressentation,max_drop_rate,min_length):
     """
     Bhai copy karega data aug karne pehle to zindagi mai kush rahega
 
     """ 
-    assert required_length <= len(flow_rep)
+    if len(flow_rep) <= min_length:
+        return flow_rep
 
-    drop_rate = min(max_drop_rate, (1 - required_length/len(flow_rep)))    
+    drop_rate = min(max_drop_rate, (1 - min_length/len(flow_rep)))    
     drop_rate = np.random.random()*drop_rate
 
 
@@ -229,5 +230,15 @@ def dropPacketFromPacketRep(flow_rep : PacketFlowRepressentation, required_lengt
     directions = directions[keep_indices].tolist()
     inter_arrival_times = getIATFromTimeStamps(timestamps)
     aug_rep = PacketFlowRepressentation(lengths= lengths, directions= directions, inter_arrival_times= inter_arrival_times,class_type= flow_rep.class_type)
-    aug_rep = aug_rep.getSubFlow(start_index=0, length= required_length)
     return aug_rep
+
+
+
+
+
+
+
+
+
+
+    

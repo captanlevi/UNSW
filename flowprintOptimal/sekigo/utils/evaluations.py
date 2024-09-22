@@ -189,6 +189,7 @@ class EarlyEvaluation(Evaluator):
 
             metrices = self.classificationScores(predicted= predictions, labels= labels, y_true= y_true)
             metrices["time"] =  time.mean()
+            metrices["time_std"] = time.std()
             metrices["incorrect_ood"] = incorrect_ood
 
         if ood_dataset != None:

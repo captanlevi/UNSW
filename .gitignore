@@ -4,5 +4,6 @@ results/
 results1/
 models/
 storage/
+*pyc
 # Ignore all CSV files
 *.csv
